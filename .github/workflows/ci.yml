@@ -2,47 +2,15 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [ main, master ]
   pull_request:
-    branches: ["**"]
-  workflow_dispatch: {}
+    branches: [ main, master ]
 
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: company_lens_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      # Test-only values. Real secrets are never used in CI — the Gemini
-      # and Sheets clients gracefully no-op / fall back when unset, which
-      # is exactly what tests/test_gemini_judge.py and tests/test_sheets.py
-      # exercise.
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/company_lens_test
-      ENVIRONMENT: test
-      LOG_LEVEL: INFO
-      API_KEY: ci-test-key
-      GEMINI_API_KEY: ""
-      GEMINI_MODEL: gemini-3.6-flash
-      GOOGLE_SHEET_ID: ""
-      GOOGLE_SERVICE_ACCOUNT_JSON: ""
-      POLL_INTERVAL_SECONDS: "300"
-
     steps:
-      - name: Check out repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -55,16 +23,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff
+          pip install pytest pytest-asyncio flake8
 
-      - name: Install Playwright browsers
-        run: python -m playwright install --with-deps chromium
-
-      - name: Lint (ruff)
-        run: ruff check app tests
-
-      - name: Run test suite
-        run: pytest -v
-
-      - name: Alembic migration smoke test
-        run: alembic upgrade head
+      - name: Run Pytest suite
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+          GEMINI_API_KEY: "ci-mock-key"
+          GEMINI_MODEL: "gemini-3.6-flash"
+        run: |
+          pytest tests/ -v

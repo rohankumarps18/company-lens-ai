@@ -1,35 +1,16 @@
-name: Trigger Pipeline Run
-
-# Runs the live deployment's /api/v1/pipeline/run endpoint on a schedule,
-# and lets anyone trigger it manually from the Actions tab. This doubles
-# as an external wake-up call for Render's free tier, which spins the
-# service down after ~15 min idle (see render.yaml).
+name: Trigger Company Intelligence Pipeline
 
 on:
+  workflow_dispatch:
   schedule:
-    # Every 15 minutes. Adjust to taste — this is independent of
-    # POLL_INTERVAL_SECONDS, which drives the in-process polling loop
-    # while the service is awake.
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+    - cron: '0 */6 * * *'
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Health check (wakes a sleeping free-tier instance)
+      - name: Call Render Pipeline Endpoint
         run: |
-          curl -sf --retry 5 --retry-delay 10 --retry-all-errors \
-            "${{ secrets.PIPELINE_BASE_URL }}/api/v1/health"
-
-      - name: Trigger pipeline run
-        run: |
-          curl -sf -X POST \
-            "${{ secrets.PIPELINE_BASE_URL }}/api/v1/pipeline/run" \
-            -H "Content-Type: application/json"
-
-      - name: Report run status
-        if: always()
-        run: |
-          curl -sf "${{ secrets.PIPELINE_BASE_URL }}/api/v1/runs?limit=1" \
-            | tee latest_run.json
+          curl -X POST "${{ secrets.RENDER_PIPELINE_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'
