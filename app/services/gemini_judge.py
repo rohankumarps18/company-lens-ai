@@ -1,84 +1,75 @@
-# app/services/gemini_judge.py
-from typing import List
+import json
+import logging
+from typing import List, Optional
 from google import genai
 from google.genai import types
 from app.core.config import settings
-from app.schemas.signal import SignalRead
+from app.schemas.signal import SignalCreate
 from app.schemas.verdict import Verdict
 
+logger = logging.getLogger(__name__)
 
 class GeminiJudgeService:
-    def __init__(self, api_key: str = None, model: str = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key if api_key is not None else settings.GEMINI_API_KEY
         self.model = model or settings.GEMINI_MODEL
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        if self.api_key:
+            self.client = genai.Client(api_key=self.api_key)
+        else:
+            self.client = None
 
     async def evaluate_signals(
         self,
         company_name: str,
         website: str,
-        signals: List[SignalRead],
+        signals: List[SignalCreate]
     ) -> Verdict:
-        """
-        Evaluates the public signals collected for a company and returns a validated structured Verdict.
-        """
-        if not self.client:
+        if not self.api_key or not self.client:
+            logger.warning("Missing GEMINI_API_KEY. Returning fallback verdict.")
             return Verdict(
                 fit="unknown",
                 confidence=0.0,
-                reasoning="Gemini API Client is not configured. Missing GEMINI_API_KEY.",
-                follow_up_question="Can valid API credentials be provided in the environment?",
+                reasoning="Missing GEMINI_API_KEY configuration.",
+                follow_up_question="Can the pipeline retry evaluating this company record?"
             )
 
-        signal_evidence = [
-            {
-                "signal_type": s.signal_type,
-                "confidence": s.confidence,
-                "data": s.value,
-                "extraction_method": s.extraction_method,
-            }
-            for s in signals
-        ]
+        context_signals = []
+        for s in signals:
+            context_signals.append(f"Provider: {s.provider} | Data: {json.dumps(s.raw_data)}")
+        signals_text = "\n".join(context_signals) if context_signals else "No signals extracted."
 
-        system_instruction = (
-            "You are a rigorous investment and market evaluation judge. "
-            "Evaluate whether the target company has a strong product-market fit, technical viability, "
-            "and hiring intent based ONLY on the provided public evidence signals. "
-            "Reason strictly from the provided evidence without inventing or hallucinating facts. "
-            "If signals are sparse, failed, or missing, state that clearly in your reasoning and lower the confidence score. "
-            "Return your evaluation strictly matching the structured output schema."
-        )
+        prompt = f"""You are an expert investment and business development evaluation judge.
+Evaluate the following company based strictly on the provided signals.
 
-        prompt = f"""
-Target Company: {company_name}
-Target Website: {website}
+Company: {company_name}
+Website: {website}
 
-Collected Independent Evidence Signals:
-{signal_evidence}
+Signals Extracted:
+{signals_text}
 
-Provide a structured evaluation with:
-- fit: 'high', 'medium', 'low', or 'unknown'
-- confidence: float between 0.0 and 1.0 (reflecting signal completeness)
-- reasoning: grounded synthesis citing only the supplied evidence
-- follow_up_question: one targeted question to resolve remaining uncertainty
+Provide an objective assessment strictly answering with:
+- fit: "high", "medium", "low", or "unknown"
+- confidence: float between 0.0 and 1.0
+- reasoning: Detailed evidence-based rationale citing specific traction, pricing, or product lines.
+- follow_up_question: A targeted discovery question.
 """
-
         try:
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
                     response_mime_type="application/json",
                     response_schema=Verdict,
-                    temperature=0.1,
+                    temperature=0.2,
                 ),
             )
-            return Verdict.model_validate_json(response.text)
+            data = json.loads(response.text)
+            return Verdict(**data)
         except Exception as e:
+            logger.error(f"Gemini evaluation failed: {e}")
             return Verdict(
                 fit="unknown",
                 confidence=0.0,
                 reasoning=f"LLM evaluation reasoning failed: {str(e)}",
-                follow_up_question="Can the pipeline retry evaluating this company record?",
+                follow_up_question="Can the pipeline retry evaluating this company record?"
             )

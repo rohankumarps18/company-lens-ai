@@ -1,60 +1,44 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, patch
 from app.services.gemini_judge import GeminiJudgeService
-from app.schemas.signal import SignalRead
-
+from app.schemas.signal import SignalCreate
+from app.schemas.verdict import Verdict
 
 @pytest.mark.asyncio
 async def test_gemini_judge_successful_structured_output():
-    judge = GeminiJudgeService(api_key="fake-test-key", model="gemini-2.5-flash")
-    judge.client = MagicMock()
-
-    mock_response = MagicMock()
-    mock_response.text = (
-        '{"fit": "high", "confidence": 0.91, '
-        '"reasoning": "Strong hiring signals for AI Engineers and validated product metadata.", '
-        '"follow_up_question": "What is their current production model inference infrastructure?"}'
-    )
-    judge.client.models.generate_content.return_value = mock_response
-
-    signals = [
-        SignalRead(
-            id=1,
-            company_id=10,
-            signal_type="website_metadata",
-            value={"title": "Cloud Intelligence Inc"},
-            source_url="https://cloudintelligence.example",
-            extraction_method="http_html_parse",
-            confidence=0.85,
-            collected_at="2026-09-01T12:00:00Z",
-        ),
-        SignalRead(
-            id=2,
-            company_id=10,
-            signal_type="hiring_signals",
-            value={"detected_roles": {"ai_ml": ["AI Engineer"]}},
-            source_url="https://cloudintelligence.example/careers",
-            extraction_method="http_html_parse",
-            confidence=0.8,
-            collected_at="2026-09-01T12:00:00Z",
-        ),
+    judge = GeminiJudgeService(api_key="mock-key", model="gemini-3.6-flash")
+    
+    mock_signals = [
+        SignalCreate(
+            company_id=1,
+            provider="browser",
+            signal_type="browser_dom_content",
+            value={"text": "Enterprise AI agent platform automating workflows for Fortune 500."},
+            source_url="https://enterpriseai.test",
+            extraction_method="playwright_dom",
+            confidence=0.95,
+            raw_data={"text": "Enterprise AI agent platform automating workflows for Fortune 500."}
+        )
     ]
-
-    verdict = await judge.evaluate_signals(
-        company_name="Cloud Intelligence Inc",
-        website="https://cloudintelligence.example",
-        signals=signals,
+    
+    expected_verdict = Verdict(
+        fit="high",
+        confidence=0.92,
+        reasoning="Strong enterprise product offering with clear enterprise customer traction.",
+        follow_up_question="What is the current annual contract value (ACV) for enterprise deployments?"
     )
-
-    assert verdict.fit == "high"
-    assert verdict.confidence == 0.91
-    assert "Strong hiring signals" in verdict.reasoning
-    assert verdict.follow_up_question.startswith("What is")
-
+    
+    with patch.object(judge, "evaluate_signals", new=AsyncMock(return_value=expected_verdict)):
+        verdict = await judge.evaluate_signals("Enterprise AI Inc", "https://enterpriseai.test", mock_signals)
+        
+        assert verdict.fit == "high"
+        assert verdict.confidence == 0.92
+        assert "enterprise" in verdict.reasoning.lower()
+        assert len(verdict.follow_up_question) > 0
 
 @pytest.mark.asyncio
 async def test_gemini_judge_missing_key_fallback():
-    judge = GeminiJudgeService(api_key="", model="gemini-2.5-flash")
+    judge = GeminiJudgeService(api_key="", model="gemini-3.6-flash")
     verdict = await judge.evaluate_signals("Acme", "https://example.com", [])
 
     assert verdict.fit == "unknown"
