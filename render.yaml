@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: company-lens-ai-api
+    env: docker
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # Points at your existing Neon Postgres instance. Set the real
+      # connection string as a secret in the Render dashboard — do not
+      # commit it here.
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.6-flash
+      # Must match app/core/config.py exactly: GOOGLE_SHEET_ID and
+      # GOOGLE_SERVICE_ACCOUNT_JSON (the latter is the full service
+      # account key JSON, pasted as a single-line string secret).
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: POLL_INTERVAL_SECONDS
+        value: "300"
+
+# Note: this deploys against your existing Neon database (see requirement
+# #3, already satisfied) rather than provisioning a new Render Postgres,
+# so no `databases:` block is defined here. If you'd rather use a
+# Render-managed Postgres instead, add one back and point DATABASE_URL at
+# it with `fromDatabase`.
+#
+# Render's free web plan spins the service down after ~15 min of
+# inactivity, which pauses the in-process polling loop in app/main.py.
+# The scheduled GitHub Action (.github/workflows/trigger-pipeline.yml)
+# compensates for this: it wakes the service and calls /api/v1/pipeline/run
+# on a cron, independent of whether the dyno is asleep.
