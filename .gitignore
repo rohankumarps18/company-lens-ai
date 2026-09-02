@@ -18,3 +18,10 @@ build/
 .DS_Store
 .vscode/
 *.log
+
+app.db
+*.db
+
+app.db
+*.db
+.env
