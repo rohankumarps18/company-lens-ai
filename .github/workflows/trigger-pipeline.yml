@@ -1,7 +1,7 @@
 name: Trigger Company Intelligence Pipeline
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
     - cron: '0 */6 * * *'
 
@@ -11,6 +11,9 @@ jobs:
     steps:
       - name: Call Render Pipeline Endpoint
         run: |
-          curl -X POST "${{ secrets.RENDER_PIPELINE_URL }}" \
+          # Render's free tier can take 50s+ to wake from a cold start, so
+          # retry generously rather than failing on the first attempt.
+          curl -sf -X POST "${{ secrets.RENDER_PIPELINE_URL }}" \
+            --retry 6 --retry-delay 15 --retry-all-errors \
             -H "Content-Type: application/json" \
             -d '{}'

@@ -1,13 +1,13 @@
 import json
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from google import genai
 from google.genai import types
 from app.core.config import settings
-from app.schemas.signal import SignalCreate
 from app.schemas.verdict import Verdict
 
 logger = logging.getLogger(__name__)
+
 
 class GeminiJudgeService:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
@@ -22,7 +22,7 @@ class GeminiJudgeService:
         self,
         company_name: str,
         website: str,
-        signals: List[SignalCreate]
+        signals: List[Any],
     ) -> Verdict:
         if not self.api_key or not self.client:
             logger.warning("Missing GEMINI_API_KEY. Returning fallback verdict.")
@@ -30,12 +30,19 @@ class GeminiJudgeService:
                 fit="unknown",
                 confidence=0.0,
                 reasoning="Missing GEMINI_API_KEY configuration.",
-                follow_up_question="Can the pipeline retry evaluating this company record?"
+                follow_up_question="Can the pipeline retry evaluating this company record?",
             )
 
         context_signals = []
         for s in signals:
-            context_signals.append(f"Provider: {s.provider} | Data: {json.dumps(s.raw_data)}")
+            sig_type = getattr(s, "signal_type", getattr(s, "provider", "unknown"))
+            sig_val = getattr(s, "value", getattr(s, "raw_data", ""))
+            src_url = getattr(s, "source_url", "")
+            method = getattr(s, "extraction_method", "")
+            context_signals.append(
+                f"- Signal [{sig_type}] via {method} ({src_url}): {sig_val}"
+            )
+
         signals_text = "\n".join(context_signals) if context_signals else "No signals extracted."
 
         prompt = f"""You are an expert investment and business development evaluation judge.
@@ -71,5 +78,5 @@ Provide an objective assessment strictly answering with:
                 fit="unknown",
                 confidence=0.0,
                 reasoning=f"LLM evaluation reasoning failed: {str(e)}",
-                follow_up_question="Can the pipeline retry evaluating this company record?"
+                follow_up_question="Can the pipeline retry evaluating this company record?",
             )

@@ -2,15 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: ["**"]
   pull_request:
-    branches: [ main, master ]
+    branches: ["**"]
+  workflow_dispatch: {}
 
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+
+    env:
+      # In-memory SQLite is safe here: app/core/database.py only applies
+      # pool_size/max_overflow when the URL isn't sqlite, so no real
+      # Postgres instance is needed just to run the test suite.
+      DATABASE_URL: "sqlite:///:memory:"
+      ENVIRONMENT: test
+      LOG_LEVEL: INFO
+      API_KEY: ci-test-key
+      GEMINI_API_KEY: ""
+      GEMINI_MODEL: gemini-3.6-flash
+      GOOGLE_SHEET_ID: ""
+      GOOGLE_SERVICE_ACCOUNT_JSON: ""
+      POLL_INTERVAL_SECONDS: "300"
+
     steps:
-      - name: Checkout repository
+      - name: Check out repo
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -23,12 +39,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio flake8
+          pip install ruff pytest pytest-asyncio
 
-      - name: Run Pytest suite
-        env:
-          DATABASE_URL: "sqlite:///:memory:"
-          GEMINI_API_KEY: "ci-mock-key"
-          GEMINI_MODEL: "gemini-3.6-flash"
-        run: |
-          pytest tests/ -v
+      - name: Lint (ruff)
+        run: ruff check app tests
+
+      - name: Run test suite
+        run: pytest tests/ -v
