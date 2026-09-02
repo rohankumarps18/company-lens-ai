@@ -134,6 +134,11 @@ class PipelineOrchestrator:
 
         except Exception as e:
             logger.error(f"Error executing pipeline for {company_name}: {e}")
+            # Roll back so a failed company doesn't leave the session's
+            # transaction aborted for the rest of a multi-company
+            # run_pipeline() batch (Postgres refuses further commands on
+            # an aborted transaction until it's rolled back).
+            db.rollback()
             if source_row_id:
                 self.sheets_service.update_row_verdict(
                     row_id=source_row_id,
