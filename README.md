@@ -1,10 +1,21 @@
 # Company Lens AI
 
-An automated pipeline that watches a Google Sheet of companies, enriches each one
-with independent public signals (including real browser automation), asks an LLM
-for a structured fit verdict, and syncs the verdict back to the sheet — all backed
-by a real Postgres database and exposed over an API you can trigger on demand or
-on a schedule.
+An automated company-intelligence pipeline that watches a Google Sheet of
+companies, enriches each one with independent public signals (including real
+browser automation), asks Gemini for a structured fit verdict, and syncs the
+verdict back to the sheet — backed by a real Postgres database and exposed
+over an API you can trigger on demand or on a schedule.
+
+## 🚀 Live Demo
+
+**Interactive API Documentation:**  
+https://company-lens-ai.onrender.com/docs
+
+**Health Check:**  
+https://company-lens-ai.onrender.com/api/v1/health
+
+> **Note:** The application is deployed on Render's free tier. The service may
+> take 50+ seconds to wake up after a period of inactivity.
 
 ## Architecture
 
@@ -18,65 +29,93 @@ Google Sheet ──▶ orchestrator ──▶ providers (parallel) ──▶ Pos
                sync verdict      reasoning / follow-up question)
 ```
 
-- **Source** — `GoogleSheetsService` reads unprocessed rows from the sheet via a
-  service-account-authenticated Sheets API client. A background `asyncio` task in
-  `app/main.py` polls on an interval (`POLL_INTERVAL_SECONDS`); `/api/v1/pipeline/run`
-  triggers the same logic on demand.
+- **Source** — `GoogleSheetsService` reads unprocessed rows from the sheet via
+  a service-account-authenticated Sheets API client. A background `asyncio`
+  task in `app/main.py` polls on an interval (`POLL_INTERVAL_SECONDS`);
+  `POST /api/v1/pipeline/run` triggers the same logic on demand.
 - **Enrich** — `PipelineOrchestrator._collect_signals_for_company` runs three
-  providers concurrently (`app/providers/`). `BrowserProvider` uses Playwright to
-  load the real page in a headless browser and extract DOM text, pricing, and
-  metadata — not just a static HTML fetch.
-- **Persist** — SQLAlchemy models (`app/models/`) store `companies`, `signals`,
-  `verdicts`, and `pipeline_runs` in Postgres, with Alembic migrations
-  (`alembic/versions/`).
-- **Judge** — `GeminiJudgeService` sends the collected signals to Gemini with a
-  Pydantic response schema (`app/schemas/verdict.py`), returning a calibrated
-  `fit` / `confidence` / `reasoning` / `follow_up_question`.
+  providers concurrently (`app/providers/`). `BrowserProvider` uses
+  Playwright to load the real page in a headless browser and extract DOM
+  text, pricing, and metadata — not just a static HTML fetch.
+- **Persist** — SQLAlchemy models (`app/models/`) store `companies`,
+  `signals`, `verdicts`, and `pipeline_runs` in Postgres, with Alembic
+  migrations (`alembic/versions/`).
+- **Judge** — `GeminiJudgeService` sends the collected signals to Gemini
+  (`gemini-3.6-flash` by default) with a Pydantic response schema
+  (`app/schemas/verdict.py`), returning a structured `fit` / `confidence` /
+  `reasoning` / `follow_up_question`. If the call fails for any reason, it
+  degrades gracefully to a labeled fallback verdict rather than crashing —
+  see `scripts/verify_gemini.py` below if you want to confirm a real call
+  succeeded rather than silently fell back.
 - **Sync back** — the verdict is written back to the sheet via the same
-  authenticated Sheets client.
-- **Ship** — FastAPI app (`app/main.py`, `app/api/routes.py`), containerized with
-  a Playwright-based Docker image, deployed to Render.
+  authenticated Sheets client, only when the row came from a real sheet
+  (`source_row_id` is set) — ad-hoc `/evaluate` calls skip this.
+- **Ship** — FastAPI app (`app/main.py`, `app/api/routes.py`), containerized
+  with a Playwright-based Docker image (`mcr.microsoft.com/playwright/python`
+  base), deployed to Render.
 
 ## API
+
+All routes are under `/api/v1` and are currently **unauthenticated** —
+`API_KEY` exists as a setting in `app/core/config.py` but nothing in
+`app/api/routes.py` checks it yet. Fine for a demo behind an obscure Render
+URL; worth knowing before pointing this at anything sensitive.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/v1/health` | GET | Liveness check |
-| `/api/v1/pipeline/run` | POST | Process all unprocessed sheet rows now |
-| `/api/v1/evaluate` | POST | Enrich + evaluate a single ad-hoc `{name, website}` |
+| `/api/v1/pipeline/run` | POST | Process all unprocessed rows from the Google Sheet |
+| `/api/v1/evaluate` | POST | Enrich + evaluate one ad-hoc `{name, website}`, no sheet row required |
 | `/api/v1/runs?limit=20` | GET | Recent pipeline run history |
+| `/docs` | GET | Interactive Swagger UI |
+
+There's currently no route at bare `/` — hitting the root path 404s. That's
+expected, not a bug; every real route lives under `/api/v1`.
 
 ## Local development
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 playwright install chromium
 
-cp .env.example .env   # fill in real values — see below
-
+cp .env.example .env   # then fill in real values — see note below
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
 ### Environment variables
 
-See `.env.example` for the full list. The two that trip people up:
+`app/core/config.py` is the source of truth. It reads:
 
-- `GOOGLE_SHEET_ID` — the ID segment of the sheet's URL (not the full URL).
-- `GOOGLE_SERVICE_ACCOUNT_JSON` — the **entire contents** of a Google service
-  account key JSON file, as a single-line string, for an account that's been
-  shared on the target sheet with Editor access. Prefer setting this directly
-  as an environment variable in every environment (local `.env`, CI, Render).
-  Don't check a `credentials.json` file into git — it's gitignored here on
-  purpose.
+```
+ENVIRONMENT
+LOG_LEVEL
+API_KEY
+PORT
+DATABASE_URL
+GEMINI_API_KEY
+GEMINI_MODEL
+GOOGLE_SHEET_ID
+GOOGLE_SERVICE_ACCOUNT_JSON
+POLL_INTERVAL_SECONDS
+```
 
-> **Note on naming:** the code (`app/core/config.py`) reads `GOOGLE_SHEET_ID`
-> and `GOOGLE_SERVICE_ACCOUNT_JSON`. Older drafts of this repo's
-> `.env.example`/`render.yaml` used `SPREADSHEET_ID`/`GOOGLE_SHEETS_CREDENTIALS_JSON`
-> instead, which the app silently ignores. Both files have been corrected to
-> match the code — if you're pulling config from an older note or doc, use
-> the names above.
+> **The checked-in `.env.example` is currently out of date** — it lists
+> `GOOGLE_SHEETS_CREDENTIALS`, which the app doesn't read at all. Use
+> `GOOGLE_SERVICE_ACCOUNT_JSON` (shown above), matching `config.py`, or the
+> Sheets integration will silently fail to authenticate.
+
+Notes on the two that trip people up:
+
+- `GOOGLE_SHEET_ID` — the ID segment of the sheet's URL, not the full URL.
+  Note there's also a hardcoded fallback sheet ID baked into `config.py` if
+  this is left unset — don't rely on that in a fork, set your own.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — the entire contents of a Google
+  service-account key JSON file, as a single-line string, for an account
+  shared on the target sheet with Editor access. `config.py` also has a
+  fallback that reads a local `credentials.json` file if the env var is
+  empty — don't commit that file (it's gitignored on purpose).
 
 ### Tests
 
@@ -84,81 +123,79 @@ See `.env.example` for the full list. The two that trip people up:
 pytest -v
 ```
 
-Tests use an in-memory/isolated setup and don't require a real Gemini key or
-Sheets credentials — `GeminiJudgeService` and `GoogleSheetsService` both
-degrade gracefully (returning an `unknown`/`0.0` verdict, or logging a
-warning) when credentials are absent, which is what `tests/test_gemini_judge.py`
-and `tests/test_sheets.py` exercise. CI does the same (see below), except for
-`DATABASE_URL`, which needs to be a real Postgres connection string — the
-SQLAlchemy engine is configured with `pool_size`/`max_overflow`, which SQLite
-doesn't support, so tests run against a throwaway Postgres service container
-in CI (and you'll want a real Postgres locally too, e.g. via Docker or Neon's
-free tier).
+Runs against `sqlite:///:memory:` with empty Gemini/Sheets credentials — both
+services degrade gracefully rather than erroring when credentials are
+missing, and `app/core/database.py` only applies Postgres-specific engine
+args (`pool_size`/`max_overflow`) when the URL isn't SQLite, so no real
+database is needed to run the suite. Production still uses Postgres (Neon).
+
+To prove the *deployed* app is actually calling Gemini — not just that tests
+pass, since the judge silently falls back on any failure — run:
+
+```bash
+python scripts/verify_gemini.py
+```
+
+with a real `.env` in place. It makes one live, non-mocked call and fails
+loudly if it detects a fallback response.
 
 ## Deployment (Render)
 
-1. Push this repo to GitHub (see [Security note](#security-note-before-you-push) first).
-2. In Render, **New → Blueprint**, point it at the repo. `render.yaml` defines
-   a free-tier Docker web service.
-3. Render will prompt for the `sync: false` secrets: `DATABASE_URL` (your
-   Neon connection string), `GEMINI_API_KEY`, `GOOGLE_SHEET_ID`, and
-   `GOOGLE_SERVICE_ACCOUNT_JSON`. Paste the service-account JSON as one line.
-4. Deploy. `healthCheckPath: /api/v1/health` gates rollout.
-5. Once you have the public URL (e.g. `https://company-lens-ai-api.onrender.com`),
-   add it as a GitHub Actions secret — see below.
+`render.yaml` defines a free-tier Docker web service. In Render: **New →
+Blueprint**, point it at this repo. It'll prompt for the `sync: false`
+secrets: `DATABASE_URL` (a real Postgres string — this deploys against an
+existing Neon instance rather than provisioning a new one), `GEMINI_API_KEY`,
+`GOOGLE_SHEET_ID`, and `GOOGLE_SERVICE_ACCOUNT_JSON` (paste the service
+account JSON as one line). `healthCheckPath: /api/v1/health` gates rollout.
 
-Render/Railway/Koyeb free tiers all spin the service down after a period of
-inactivity. Rather than paying for an always-on plan, this repo pairs the
-free tier with a scheduled GitHub Action that periodically hits the health
-check and triggers a run — see the next section. If you'd rather rely purely
-on the in-process poller, upgrade the Render plan in `render.yaml` to
-something that doesn't sleep.
+Render's free tier spins the service down after ~15 min idle, which pauses
+the in-process polling loop. `trigger-pipeline.yml` (below) compensates by
+periodically hitting the deployed URL on a schedule, which both wakes a
+sleeping instance and triggers a run.
 
 ## CI/CD (GitHub Actions)
 
-Two workflows live in `.github/workflows/`:
+Two workflows in `.github/workflows/`:
 
-- **`ci.yml`** — runs on every push/PR: `ruff check` (pyflakes/pycodestyle
-  rules, not a full style rewrite), the `pytest` suite against a real
-  Postgres service container, and an `alembic upgrade head` smoke test.
-- **`trigger-pipeline.yml`** — runs on a 15-minute cron and on manual
-  dispatch from the Actions tab. It hits `/api/v1/health` (waking a sleeping
-  free-tier instance), `POST`s `/api/v1/pipeline/run`, and logs the latest
-  run from `/api/v1/runs`.
+- **`ci.yml`** — on every push/PR: `ruff check`, then `pytest tests/ -v`
+  against `sqlite:///:memory:` (see Tests above for why that's safe). This
+  means CI does **not** currently catch Postgres-specific issues — a real
+  Postgres service container would be a reasonable addition if that matters
+  to you.
+- **`trigger-pipeline.yml`** — cron (every 6 hours) plus manual dispatch from
+  the Actions tab. `POST`s to whatever URL is in the `RENDER_PIPELINE_URL`
+  secret, with retries to ride out cold starts.
 
 `trigger-pipeline.yml` needs one repo secret:
 
 - **Settings → Secrets and variables → Actions → New repository secret**
-  - Name: `PIPELINE_BASE_URL`
-  - Value: your Render URL, no trailing slash (e.g. `https://company-lens-ai-api.onrender.com`)
-
-## Security note before you push
-
-Before publishing this repo:
-
-- Confirm no `.env` or `credentials.json` file is staged (`git status` — both
-  are gitignored, but double-check if you've ever `git add -f`'d one).
-- If a real Google service-account key, Gemini API key, or database
-  connection string was ever written to disk in this project outside of
-  `.env`/`credentials.json` (e.g. pasted into a doc, a chat log, or an old
-  commit), rotate it — deleting the file locally doesn't undo exposure.
-  Service account keys are rotated from the Google Cloud Console (IAM &
-  Admin → Service Accounts → Keys); the Gemini key from Google AI Studio;
-  the Neon connection string from your Neon project's connection details.
+  - Name: `RENDER_PIPELINE_URL`
+  - Value: the full pipeline-run URL, e.g.
+    `https://company-lens-ai.onrender.com/api/v1/pipeline/run`
 
 ## Repo layout
 
 ```
 app/
-  api/routes.py          FastAPI routes
-  core/                  settings, DB engine
-  models/                SQLAlchemy models
+  api/routes.py          FastAPI routes (all under /api/v1)
+  core/                   settings (config.py), DB engine (database.py)
+  models/                 SQLAlchemy models: company, signal, verdict, pipeline_run
   schemas/                Pydantic request/response + LLM structured-output schemas
-  providers/              signal-gathering providers (website, hiring, browser)
-  services/                orchestrator, Sheets client, Gemini judge
+  providers/              website_provider, hiring_provider, browser_provider
+  services/               orchestrator, sheets_service, gemini_judge
 alembic/                  migrations
-tests/                     pytest suite
-.github/workflows/         CI + scheduled trigger
-Dockerfile                 Playwright-based image
-render.yaml                 Render blueprint
+scripts/
+  verify_gemini.py        real, non-mocked Gemini smoke test (see Tests above)
+tests/                    pytest suite (7 test files)
+.github/workflows/        ci.yml, trigger-pipeline.yml
+Dockerfile                mcr.microsoft.com/playwright/python base image
+render.yaml                Render blueprint
 ```
+
+## Security note
+
+Before making further changes public, double-check `.env` and
+`credentials.json` are never staged (`git status` — both are gitignored).
+`.env.example` should only ever contain placeholder values, never a real key
+or connection string — if you ever paste real credentials into it while
+editing, replace them with placeholders before committing, not after.
